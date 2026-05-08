@@ -111,4 +111,14 @@ class PanelEntry:
     note: str
 
 
+@dataclass(slots=True)
+class IOPVSnapshot:
+    symbol: str
+    current_price: float
+    iopv: float | None
+    premium_pct: float | None
+    action: str
+    note: str
+
+
 JSONValue = dict[str, Any] | list[Any] | str | int | float | bool | None

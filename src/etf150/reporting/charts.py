@@ -30,8 +30,8 @@ def configure_fonts() -> None:
             return
 
 
-def save_allocation_chart(slices: list[AllocationSlice], output_path: Path) -> Path:
-    """Save an allocation pie chart."""
+def build_allocation_figure(slices: list[AllocationSlice]):
+    """Build an allocation pie chart figure."""
     configure_fonts()
     labels = [item.name for item in slices]
     sizes = [item.weight for item in slices]
@@ -40,6 +40,12 @@ def save_allocation_chart(slices: list[AllocationSlice], output_path: Path) -> P
     axis.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=90)
     axis.axis("equal")
     figure.tight_layout()
+    return figure
+
+
+def save_allocation_chart(slices: list[AllocationSlice], output_path: Path) -> Path:
+    """Save an allocation pie chart."""
+    figure = build_allocation_figure(slices)
     figure.savefig(output_path)
     plt.close(figure)
     return output_path
