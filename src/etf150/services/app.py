@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from etf150.backtest.engine import run_backtest
+from etf150.backtest.engine import run_backtest, run_valuation_entry_backtest
 from etf150.data.providers.base import DataProvider
 from etf150.strategy.rotation import suggest_rotation
 from etf150.strategy.signals import build_signal_report
@@ -77,6 +77,14 @@ def get_backtest(provider: DataProvider, index_code: str, years: int) -> dict[st
     series = provider.get_backtest_series(index_code, years)
     result = run_backtest(index_code, series, years)
     return {"backtest": result}
+
+
+def get_entry_backtest(provider: DataProvider, index_code: str, holding_days: int, history_years: int = 10) -> dict[str, Any]:
+    """Build a valuation-entry backtest payload."""
+    price_points = provider.get_backtest_points(index_code, history_years)
+    valuation_points = provider.get_valuation_history(index_code, history_years)
+    result = run_valuation_entry_backtest(index_code, price_points, valuation_points, holding_days)
+    return {"entry_backtest": result}
 
 
 def get_iopv(provider: DataProvider, symbol: str) -> dict[str, Any]:

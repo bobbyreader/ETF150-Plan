@@ -3,11 +3,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from etf150.data.cache import FrameCache
 from etf150.data.providers.akshare_provider import AkshareDataProvider
 
 
 class DummyAk:
+    fail_pe = False
+
     def stock_index_pe_lg(self, symbol: str) -> pd.DataFrame:
+        if self.fail_pe:
+            raise ValueError("temporary outage")
         if symbol == "bad":
             raise ValueError("boom")
         return pd.DataFrame(
@@ -47,11 +52,30 @@ class DummyAk:
             ]
         )
 
+    def stock_a_ttm_lyr(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"代码": "000001", "市盈率-ttm": 8.0},
+                {"代码": "000002", "市盈率-ttm": 12.0},
+                {"代码": "000003", "市盈率-ttm": 220.0},
+            ]
+        )
+
+    def stock_hk_index_daily_sina(self, symbol: str) -> pd.DataFrame:
+        return pd.DataFrame([{"date": "2024-01-01", "close": 100}, {"date": "2024-01-02", "close": 110}])
+
+    def index_global_hist_em(self, symbol: str) -> pd.DataFrame:
+        return pd.DataFrame([{"日期": "2024-01-01", "收盘": 100}, {"日期": "2024-01-02", "收盘": 120}])
+
+    def futures_global_hist_em(self, symbol: str) -> pd.DataFrame:
+        return pd.DataFrame([{"日期": "2024-01-01", "收盘": 100}, {"日期": "2024-01-02", "收盘": 80}])
+
 
 @pytest.fixture
-def provider(monkeypatch: pytest.MonkeyPatch) -> AkshareDataProvider:
+def provider(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AkshareDataProvider:
     monkeypatch.setattr("etf150.data.providers.akshare_provider.AkshareDataProvider.__init__", lambda self: setattr(self, "_ak", DummyAk()))
     instance = AkshareDataProvider()
+    instance._cache = FrameCache(tmp_path / "akshare-cache")
     instance._get_index_pe_frame.cache_clear()
     instance._get_index_pb_frame.cache_clear()
     instance._get_index_daily_frame.cache_clear()
@@ -87,6 +111,7 @@ def test_get_index_snapshot_builds_payload(provider: AkshareDataProvider) -> Non
     assert snapshot.market_pe == 12.0
     assert snapshot.market_pb == 1.3
     assert len(snapshot.constituents) == 2
+    assert [item.pe_ttm for item in snapshot.constituents] == [8.0, 12.0]
     assert len(snapshot.history_5y) == 2
 
 
@@ -98,3 +123,24 @@ def test_latest_percentile_uses_equal_weight_pe(provider: AkshareDataProvider) -
 def test_get_lg_symbol_raises_for_unsupported(provider: AkshareDataProvider) -> None:
     with pytest.raises(RuntimeError, match="乐咕乐股估值映射"):
         provider._get_lg_symbol("unknown")
+
+
+def test_get_index_pe_frame_uses_stale_cache_after_error(provider: AkshareDataProvider) -> None:
+    first = provider._get_index_pe_frame("hs300")
+    provider._ak.fail_pe = True
+    provider._get_index_pe_frame.cache_clear()
+
+    second = provider._get_index_pe_frame("hs300")
+
+    assert second.equals(first)
+
+
+def test_get_panel_entries_uses_real_proxy_data_for_all_markets(provider: AkshareDataProvider) -> None:
+    entries = provider.get_panel_entries()
+    notes = {entry.market: entry.note for entry in entries}
+
+    assert "真实数据" in notes["港股"]
+    assert "真实数据" in notes["美股"]
+    assert "真实数据" in notes["德国"]
+    assert "真实数据" in notes["黄金"]
+    assert "真实数据" in notes["原油"]

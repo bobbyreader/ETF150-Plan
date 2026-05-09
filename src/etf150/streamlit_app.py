@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from etf150.cli import get_provider
-from etf150.services import get_allocation, get_backtest, get_iopv, get_panel, get_signal, get_valuation
+from etf150.services import get_allocation, get_backtest, get_entry_backtest, get_iopv, get_panel, get_signal, get_valuation
 
 
 def _serialize(value: Any) -> Any:
@@ -116,6 +116,16 @@ def _render_backtest_tab(provider_name: str, index_code: str, years: int) -> Non
     st.json(_serialize(result))
 
 
+def _render_entry_backtest_tab(provider_name: str, index_code: str, holding_days: int, history_years: int) -> None:
+    provider = _get_provider(provider_name)
+    result = get_entry_backtest(provider, index_code, holding_days, history_years)
+    entry_backtest = result["entry_backtest"]
+
+    st.subheader("估值起点回测")
+    st.dataframe(pd.DataFrame(_serialize(entry_backtest.entries)), use_container_width=True)
+    st.json(_serialize(result))
+
+
 def _render_iopv_tab(provider_name: str, symbol: str) -> None:
     provider = _get_provider(provider_name)
     result = get_iopv(provider, symbol)
@@ -168,6 +178,7 @@ def main() -> None:
     default_backtest_years = provider.get_streamlit_default_backtest_years()
     backtest_year_index = backtest_year_options.index(default_backtest_years) if default_backtest_years in backtest_year_options else 0
     backtest_years = st.sidebar.selectbox("回测年限", backtest_year_options, index=backtest_year_index)
+    entry_holding_days = st.sidebar.number_input("估值起点持有天数", min_value=1, value=252, step=21)
 
     rotation_from, rotation_from_percentile, rotation_to, rotation_to_percentile = provider.get_streamlit_default_rotation_inputs()
     rotation_from = st.sidebar.text_input("换马卖出标的", value=rotation_from)
@@ -180,8 +191,8 @@ def main() -> None:
     st.sidebar.caption(provider.get_streamlit_market_warning())
     st.sidebar.caption(provider.get_streamlit_footer_note())
 
-    valuation_tab, signal_tab, panel_tab, allocation_tab, backtest_tab, iopv_tab, sip_tab = st.tabs(
-        ["估值", "信号", "面板", "配置", "回测", "IOPV", "定投"]
+    valuation_tab, signal_tab, panel_tab, allocation_tab, backtest_tab, entry_backtest_tab, iopv_tab, sip_tab = st.tabs(
+        ["估值", "信号", "面板", "配置", "回测", "估值起点", "IOPV", "定投"]
     )
 
     with valuation_tab:
@@ -203,6 +214,8 @@ def main() -> None:
         _render_allocation_tab(provider_name)
     with backtest_tab:
         _render_backtest_tab(provider_name, index_code, int(backtest_years))
+    with entry_backtest_tab:
+        _render_entry_backtest_tab(provider_name, index_code, int(entry_holding_days), int(backtest_years))
     with iopv_tab:
         _render_iopv_tab(provider_name, symbol)
     with sip_tab:

@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.cache/
 .venv/
 .DS_Store
 allocation.png

@@ -98,6 +98,26 @@ class BacktestResult:
 
 
 @dataclass(slots=True)
+class EntryBacktestBucket:
+    bucket: str
+    label: str
+    percentile_min: float
+    percentile_max: float
+    sample_size: int
+    average_return_pct: float | None
+    median_return_pct: float | None
+    best_return_pct: float | None
+    worst_return_pct: float | None
+
+
+@dataclass(slots=True)
+class EntryBacktestResult:
+    index_code: str
+    holding_days: int
+    entries: list[EntryBacktestBucket]
+
+
+@dataclass(slots=True)
 class AllocationSlice:
     name: str
     weight: float

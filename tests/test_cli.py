@@ -1,6 +1,16 @@
 import json
+import sys
 
-from etf150.cli import build_parser, handle_allocation, handle_backtest, handle_panel, handle_signal, handle_sip, handle_valuation
+from etf150.cli import (
+    build_parser,
+    handle_allocation,
+    handle_backtest,
+    handle_entry_backtest,
+    handle_panel,
+    handle_signal,
+    handle_sip,
+    handle_valuation,
+)
 from etf150.data.providers.mock import MockDataProvider
 
 
@@ -9,6 +19,11 @@ def test_parser_accepts_valuation_command() -> None:
     args = parser.parse_args(["valuation", "--provider", "mock", "--index", "hs300"])
     assert args.command == "valuation"
     assert args.index == "hs300"
+
+
+def test_cli_import_does_not_load_matplotlib() -> None:
+    assert "matplotlib" not in sys.modules
+    assert "matplotlib.pyplot" not in sys.modules
 
 
 def test_handle_valuation_returns_payload() -> None:
@@ -42,6 +57,18 @@ def test_handle_sip_returns_text() -> None:
 def test_handle_backtest_returns_result() -> None:
     result = handle_backtest(MockDataProvider(), "hs300", 3)
     assert result["backtest"].holding_years == 3
+
+
+def test_parser_accepts_entry_backtest_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["entry-backtest", "--provider", "mock", "--index", "hs300", "--holding-days", "20"])
+    assert args.command == "entry-backtest"
+    assert args.holding_days == 20
+
+
+def test_handle_entry_backtest_returns_bucketed_result() -> None:
+    result = handle_entry_backtest(MockDataProvider(), "hs300", 20)
+    assert result["entry_backtest"].entries[0].bucket == "low"
 
 
 def test_renderable_payload_can_be_json_encoded() -> None:

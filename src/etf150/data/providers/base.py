@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from etf150.models import AllocationSlice, IOPVSnapshot, IndexSnapshot, PanelEntry
+from etf150.models import AllocationSlice, HistoricalSeriesPoint, IOPVSnapshot, IndexSnapshot, PanelEntry
 
 
 class DataProvider(Protocol):
@@ -18,6 +18,12 @@ class DataProvider(Protocol):
 
     def get_backtest_series(self, index_code: str, years: int) -> list[float]:
         """Return price-like historical series for backtest."""
+
+    def get_backtest_points(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        """Return dated price-like historical points for entry backtests."""
+
+    def get_valuation_history(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        """Return dated valuation history points."""
 
     def save_allocation_chart(self, output_path: Path) -> Path:
         """Create an allocation chart and return the output path."""

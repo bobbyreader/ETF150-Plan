@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -8,7 +7,17 @@ from typing import Any
 import pandas as pd
 
 from etf150.config import DEFAULT_INDEX, SUPPORTED_INDEXES
+from etf150.data.cache import FrameCache
 from etf150.data.providers.mock import MockDataProvider
+from etf150.data.providers.akshare_utils import (
+    coerce_date,
+    find_column,
+    find_pe_column,
+    frame_to_points,
+    normalize_stock_code,
+    optional_float,
+    require_float,
+)
 from etf150.models import ConstituentMetric, HistoricalSeriesPoint, IOPVSnapshot, IndexSnapshot, PanelEntry
 
 
@@ -21,13 +30,13 @@ class AkshareDataProvider(MockDataProvider):
         "cyb": "创业板50",
         "hongli": "深证红利",
     }
-    _PANEL_INDEX_SYMBOLS = {
-        "A股": "沪深300",
-        "港股": None,
-        "美股": None,
-        "德国": None,
-        "黄金": None,
-        "原油": None,
+    _PANEL_SOURCES = {
+        "A股": ("valuation", "沪深300"),
+        "港股": ("hk_index", "HSI"),
+        "美股": ("global_index", "标普500"),
+        "德国": ("global_index", "德国DAX30"),
+        "黄金": ("global_future", "GC00Y"),
+        "原油": ("global_future", "CL00Y"),
     }
 
     def __init__(self) -> None:
@@ -36,6 +45,7 @@ class AkshareDataProvider(MockDataProvider):
         except ImportError as error:
             raise RuntimeError("AkShare is not installed") from error
         self._ak = ak
+        self._cache = FrameCache(Path(".cache") / "etf150" / "akshare")
 
     def get_index_snapshot(self, index_code: str) -> IndexSnapshot:
         index_meta = self._get_index_meta(index_code)
@@ -51,8 +61,8 @@ class AkshareDataProvider(MockDataProvider):
             code=index_code,
             name=index_meta["name"],
             category=index_meta["category"],
-            market_pe=self._require_float(latest_pe.get("滚动市盈率"), f"{index_meta['name']} 当前滚动市盈率缺失"),
-            market_pb=self._require_float(latest_pb.get("市净率"), f"{index_meta['name']} 当前市净率缺失"),
+            market_pe=require_float(latest_pe.get("滚动市盈率"), f"{index_meta['name']} 当前滚动市盈率缺失"),
+            market_pb=require_float(latest_pb.get("市净率"), f"{index_meta['name']} 当前市净率缺失"),
             current_price=iopv_snapshot.current_price,
             iopv=iopv_snapshot.iopv,
             constituents=self._build_constituents(index_code, latest_pe, latest_pb),
@@ -62,21 +72,9 @@ class AkshareDataProvider(MockDataProvider):
 
     def get_panel_entries(self) -> list[PanelEntry]:
         entries: list[PanelEntry] = []
-        for market, symbol in self._PANEL_INDEX_SYMBOLS.items():
-            if symbol is None:
-                entries.append(
-                    PanelEntry(
-                        market=market,
-                        percentile=50.0,
-                        zone="normal",
-                        note=self.get_market_source_note(market),
-                    )
-                )
-                continue
+        for market, (source_type, symbol) in self._PANEL_SOURCES.items():
             try:
-                index_code = self._find_index_code_by_lg_symbol(symbol)
-                pe_frame = self._get_index_pe_frame(index_code)
-                percentile = self._latest_percentile_from_frame(pe_frame)
+                percentile = self._get_panel_percentile(source_type, symbol)
                 entries.append(
                     PanelEntry(
                         market=market,
@@ -97,12 +95,20 @@ class AkshareDataProvider(MockDataProvider):
         return entries
 
     def get_backtest_series(self, index_code: str, years: int) -> list[float]:
-        frame = self._get_index_daily_frame(index_code)
-        trailing = frame.tail(max(years * 252, 2))
-        series = [self._require_float(value, "指数历史收盘价缺失") for value in trailing["close"].tolist()]
+        points = self.get_backtest_points(index_code, years)
+        series = [point.value for point in points]
         if len(series) < 2:
             raise RuntimeError("AkShare 历史价格样本不足，无法回测")
         return series
+
+    def get_backtest_points(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        frame = self._get_index_daily_frame(index_code)
+        trailing = frame.tail(max(years * 252, 2))
+        return frame_to_points(trailing, date_columns=("date", "日期"), value_columns=("close", "收盘"))
+
+    def get_valuation_history(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        frame = self._get_index_pe_frame(index_code)
+        return self._build_history_points(frame, years)
 
     def get_price_series(self, symbol: str, years: int) -> list[float]:
         try:
@@ -112,8 +118,8 @@ class AkshareDataProvider(MockDataProvider):
 
     def get_iopv_snapshot(self, symbol: str) -> IOPVSnapshot:
         row = self._get_etf_spot_row(symbol)
-        current_price = self._require_float(row.get("最新价"), f"ETF {symbol} 最新价缺失")
-        iopv = self._optional_float(row.get("IOPV实时估值"))
+        current_price = require_float(row.get("最新价"), f"ETF {symbol} 最新价缺失")
+        iopv = optional_float(row.get("IOPV实时估值"))
         premium_pct = None
         action = "buy_ok"
         note = "现价未高于IOPV，可按计划执行"
@@ -143,17 +149,17 @@ class AkshareDataProvider(MockDataProvider):
     def get_capability_notes(self) -> list[str]:
         return [
             "指数估值与回测基于 AkShare 实时/历史数据",
-            "A股面板优先真实数据，其余市场首版为实验性占位",
-            "若接口缺失或不稳定，会明确报错而不是回退到 mock",
+            "A股估值优先使用成分股等权 PE，非A股面板使用真实历史行情分位代理",
+            "接口缺失或不稳定时优先使用本地缓存；无缓存才报错",
         ]
 
     def get_market_source_note(self, market: str) -> str:
         if market == "A股":
             return "A股使用 AkShare + 乐咕乐股指数估值数据"
-        return f"{market} 暂为实验性占位口径"
+        return f"{market} 使用 AkShare 真实数据历史行情分位代理，非完整估值口径"
 
     def is_experimental_market(self, market: str) -> bool:
-        return market != "A股"
+        return False
 
     def get_streamlit_sidebar_note(self) -> str:
         return "AkShare provider 会拉取真实数据；接口波动时会直接提示错误。"
@@ -162,7 +168,7 @@ class AkshareDataProvider(MockDataProvider):
         return "AKSHARE"
 
     def get_streamlit_live_data_warning(self) -> str:
-        return "真实行情与估值接口可能波动，不支持时会直接报错。"
+        return "真实行情与估值接口可能波动；会优先使用本地缓存，仍缺失时提示错误。"
 
     def save_allocation_chart(self, output_path: Path) -> Path:
         return super().save_allocation_chart(output_path)
@@ -190,20 +196,26 @@ class AkshareDataProvider(MockDataProvider):
 
     @lru_cache(maxsize=16)
     def _get_index_pe_frame(self, index_code: str) -> pd.DataFrame:
-        try:
-            frame = self._ak.stock_index_pe_lg(symbol=self._get_lg_symbol(index_code))
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数 PE 数据: {error}") from error
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.stock_index_pe_lg(symbol=self._get_lg_symbol(index_code))
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数 PE 数据: {error}") from error
+
+        frame = self._cached_frame(f"index-pe-{index_code}", load)
         if frame.empty:
             raise RuntimeError(f"AkShare 返回了空的 {index_code} 指数 PE 数据")
         return frame.copy()
 
     @lru_cache(maxsize=16)
     def _get_index_pb_frame(self, index_code: str) -> pd.DataFrame:
-        try:
-            frame = self._ak.stock_index_pb_lg(symbol=self._get_lg_symbol(index_code))
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数 PB 数据: {error}") from error
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.stock_index_pb_lg(symbol=self._get_lg_symbol(index_code))
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数 PB 数据: {error}") from error
+
+        frame = self._cached_frame(f"index-pb-{index_code}", load)
         if frame.empty:
             raise RuntimeError(f"AkShare 返回了空的 {index_code} 指数 PB 数据")
         return frame.copy()
@@ -211,20 +223,26 @@ class AkshareDataProvider(MockDataProvider):
     @lru_cache(maxsize=16)
     def _get_index_daily_frame(self, index_code: str) -> pd.DataFrame:
         symbol = self._get_index_meta(index_code)["akshare_symbol"]
-        try:
-            frame = self._ak.stock_zh_index_daily_em(symbol=symbol)
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数历史行情: {error}") from error
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.stock_zh_index_daily_em(symbol=symbol)
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 {index_code} 的指数历史行情: {error}") from error
+
+        frame = self._cached_frame(f"index-daily-{index_code}", load)
         if frame.empty:
             raise RuntimeError(f"AkShare 返回了空的 {index_code} 指数历史行情")
         return frame.copy()
 
     @lru_cache(maxsize=1)
     def _get_etf_spot_frame(self) -> pd.DataFrame:
-        try:
-            frame = self._ak.fund_etf_spot_em()
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 ETF 实时行情: {error}") from error
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.fund_etf_spot_em()
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 ETF 实时行情: {error}") from error
+
+        frame = self._cached_frame("etf-spot", load)
         if frame.empty:
             raise RuntimeError("AkShare 返回了空的 ETF 实时行情")
         return frame.copy()
@@ -237,47 +255,90 @@ class AkshareDataProvider(MockDataProvider):
         return match.iloc[0].to_dict()
 
     def _get_etf_price_series(self, symbol: str, years: int) -> list[float]:
-        try:
-            frame = self._ak.fund_etf_hist_em(symbol=symbol, period="daily", adjust="qfq")
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 ETF {symbol} 历史行情: {error}") from error
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.fund_etf_hist_em(symbol=symbol, period="daily", adjust="qfq")
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 ETF {symbol} 历史行情: {error}") from error
+
+        frame = self._cached_frame(f"etf-hist-{symbol}", load)
         if frame.empty:
             raise RuntimeError(f"AkShare 返回了空的 ETF {symbol} 历史行情")
         trailing = frame.tail(max(years * 252, 2))
         close_column = "收盘"
         if close_column not in trailing.columns:
             raise RuntimeError(f"ETF {symbol} 历史行情缺少 {close_column} 列")
-        series = [self._require_float(value, f"ETF {symbol} 历史收盘价缺失") for value in trailing[close_column].tolist()]
+        series = [require_float(value, f"ETF {symbol} 历史收盘价缺失") for value in trailing[close_column].tolist()]
         if len(series) < 2:
             raise RuntimeError(f"ETF {symbol} 历史行情样本不足")
         return series
 
     def _build_constituents(self, index_code: str, latest_pe: pd.Series, latest_pb: pd.Series) -> list[ConstituentMetric]:
         index_meta = self._get_index_meta(index_code)
-        equal_weight_pe = self._require_float(latest_pe.get("等权滚动市盈率"), f"{index_meta['name']} 等权滚动市盈率缺失")
-        market_pe = self._require_float(latest_pe.get("滚动市盈率"), f"{index_meta['name']} 滚动市盈率缺失")
-        pb = self._require_float(latest_pb.get("市净率"), f"{index_meta['name']} 市净率缺失")
+        equal_weight_pe = require_float(latest_pe.get("等权滚动市盈率"), f"{index_meta['name']} 等权滚动市盈率缺失")
+        market_pe = require_float(latest_pe.get("滚动市盈率"), f"{index_meta['name']} 滚动市盈率缺失")
+        pb = require_float(latest_pb.get("市净率"), f"{index_meta['name']} 市净率缺失")
         try:
             cons_frame = self._ak.index_stock_cons_weight_csindex(symbol=index_meta["csindex_symbol"])
         except Exception as error:
             raise RuntimeError(f"AkShare 无法获取 {index_meta['name']} 成分股列表: {error}") from error
         if cons_frame.empty:
             raise RuntimeError(f"AkShare 返回了空的 {index_meta['name']} 成分股列表")
+        pe_lookup = self._get_a_share_pe_lookup()
         constituents: list[ConstituentMetric] = []
-        for row in cons_frame.head(20).to_dict("records"):
+        for row in cons_frame.to_dict("records"):
+            code = normalize_stock_code(row.get("成分券代码"))
+            pe_ttm = pe_lookup.get(code)
+            if pe_ttm is None:
+                continue
             constituents.append(
                 ConstituentMetric(
-                    code=str(row.get("成分券代码", "")),
+                    code=code,
                     name=str(row.get("成分券名称", "")),
-                    pe_ttm=equal_weight_pe,
+                    pe_ttm=pe_ttm,
                     pb=pb,
                     category=index_meta["category"],
                 )
             )
         if not constituents:
-            raise RuntimeError(f"{index_meta['name']} 成分股列表为空，无法构建估值样本")
-        constituents[0].pe_ttm = market_pe
+            constituents = [
+                ConstituentMetric(
+                    code="index_proxy_equal_weight",
+                    name=f"{index_meta['name']}等权PE代理",
+                    pe_ttm=equal_weight_pe,
+                    pb=pb,
+                    category=index_meta["category"],
+                ),
+                ConstituentMetric(
+                    code="index_proxy_market_weight",
+                    name=f"{index_meta['name']}市值加权PE代理",
+                    pe_ttm=market_pe,
+                    pb=pb,
+                    category=index_meta["category"],
+                ),
+            ]
         return constituents
+
+    @lru_cache(maxsize=1)
+    def _get_a_share_pe_lookup(self) -> dict[str, float]:
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.stock_a_ttm_lyr()
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 A 股 TTM PE 数据: {error}") from error
+
+        frame = self._cached_frame("a-share-ttm-pe", load)
+        code_column = find_column(frame, ("代码", "股票代码", "证券代码"))
+        pe_column = find_pe_column(frame)
+        lookup: dict[str, float] = {}
+        for row in frame.to_dict("records"):
+            code = normalize_stock_code(row.get(code_column))
+            pe_ttm = optional_float(row.get(pe_column))
+            if code and pe_ttm is not None:
+                lookup[code] = pe_ttm
+        if not lookup:
+            raise RuntimeError("A 股 TTM PE 数据为空，无法构建成分股等权估值")
+        return lookup
 
     def _build_history_points(self, frame: pd.DataFrame, years: int) -> list[HistoricalSeriesPoint]:
         trailing = frame.tail(max(years * 252, 2))
@@ -285,17 +346,70 @@ class AkshareDataProvider(MockDataProvider):
         for row in trailing.to_dict("records"):
             points.append(
                 HistoricalSeriesPoint(
-                    day=self._coerce_date(row.get("日期")),
-                    value=self._require_float(row.get("等权滚动市盈率"), "历史等权滚动市盈率缺失"),
+                    day=coerce_date(row.get("日期")),
+                    value=require_float(row.get("等权滚动市盈率"), "历史等权滚动市盈率缺失"),
                 )
             )
         if len(points) < 2:
             raise RuntimeError(f"历史估值序列不足，无法构建 {years} 年分位")
         return points
 
+    def _get_panel_percentile(self, source_type: str, symbol: str) -> float:
+        if source_type == "valuation":
+            index_code = self._find_index_code_by_lg_symbol(symbol)
+            pe_frame = self._get_index_pe_frame(index_code)
+            return self._latest_percentile_from_frame(pe_frame)
+        frame = self._get_panel_history_frame(source_type, symbol)
+        points = frame_to_points(frame, date_columns=("date", "日期"), value_columns=("close", "收盘"))
+        values = [point.value for point in points]
+        if len(values) < 2:
+            raise RuntimeError(f"{symbol} 历史行情样本不足，无法计算分位")
+        latest = values[-1]
+        below_or_equal = sum(1 for value in values if value <= latest)
+        return round((below_or_equal / len(values)) * 100, 2)
+
+    def _get_panel_history_frame(self, source_type: str, symbol: str) -> pd.DataFrame:
+        def load() -> pd.DataFrame:
+            try:
+                if source_type == "hk_index":
+                    return self._ak.stock_hk_index_daily_sina(symbol=symbol)
+                if source_type == "global_index":
+                    return self._ak.index_global_hist_em(symbol=symbol)
+                if source_type == "global_future":
+                    return self._ak.futures_global_hist_em(symbol=symbol)
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 {symbol} 历史行情: {error}") from error
+            raise RuntimeError(f"不支持的面板数据类型: {source_type}")
+
+        frame = self._cached_frame(f"panel-{source_type}-{symbol}", load)
+        if frame.empty:
+            raise RuntimeError(f"AkShare 返回了空的 {symbol} 历史行情")
+        return frame.copy()
+
+    def _frame_to_points(
+        self,
+        frame: pd.DataFrame,
+        date_columns: tuple[str, ...],
+        value_columns: tuple[str, ...],
+    ) -> list[HistoricalSeriesPoint]:
+        value_column = self._find_column(frame, value_columns)
+        date_column = self._optional_column(frame, date_columns)
+        points: list[HistoricalSeriesPoint] = []
+        for index, row in enumerate(frame.to_dict("records")):
+            day = self._coerce_date(row.get(date_column)) if date_column else date.fromordinal(date(1970, 1, 1).toordinal() + index)
+            points.append(
+                HistoricalSeriesPoint(
+                    day=day,
+                    value=self._require_float(row.get(value_column), f"{value_column} 缺失"),
+                )
+            )
+        if len(points) < 2:
+            raise RuntimeError("历史序列样本不足")
+        return points
+
     def _latest_percentile_from_frame(self, frame: pd.DataFrame) -> float:
-        latest = self._require_float(frame.iloc[-1].get("等权滚动市盈率"), "当前等权滚动市盈率缺失")
-        series = [self._require_float(value, "历史等权滚动市盈率缺失") for value in frame["等权滚动市盈率"].tolist()]
+        latest = require_float(frame.iloc[-1].get("等权滚动市盈率"), "当前等权滚动市盈率缺失")
+        series = [require_float(value, "历史等权滚动市盈率缺失") for value in frame["等权滚动市盈率"].tolist()]
         below_or_equal = sum(1 for value in series if value <= latest)
         return round((below_or_equal / len(series)) * 100, 2)
 
@@ -308,24 +422,9 @@ class AkshareDataProvider(MockDataProvider):
             return "risk"
         return "normal"
 
-    def _coerce_date(self, value: Any) -> date:
-        if isinstance(value, date):
-            return value
-        timestamp = pd.to_datetime(value, errors="coerce")
-        if pd.isna(timestamp):
-            raise RuntimeError(f"无法解析日期值: {value}")
-        return timestamp.date()
-
-    def _optional_float(self, value: Any) -> float | None:
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return None
-        try:
-            return round(float(value), 4)
-        except (TypeError, ValueError):
-            return None
-
-    def _require_float(self, value: Any, message: str) -> float:
-        result = self._optional_float(value)
-        if result is None:
-            raise RuntimeError(message)
-        return round(result, 2)
+    def _cached_frame(self, key: str, loader):
+        cache = getattr(self, "_cache", None)
+        if cache is None:
+            cache = FrameCache(Path(".cache") / "etf150" / "akshare")
+            self._cache = cache
+        return cache.get(key, loader)

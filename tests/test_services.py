@@ -1,5 +1,14 @@
 from etf150.data.providers.mock import MockDataProvider
-from etf150.services import get_allocation, get_backtest, get_iopv, get_panel, get_signal, get_sip, get_valuation
+from etf150.services import (
+    get_allocation,
+    get_backtest,
+    get_entry_backtest,
+    get_iopv,
+    get_panel,
+    get_signal,
+    get_sip,
+    get_valuation,
+)
 
 
 def test_get_valuation_returns_valuation_result() -> None:
@@ -40,6 +49,12 @@ def test_get_sip_returns_text() -> None:
 def test_get_backtest_returns_result() -> None:
     result = get_backtest(MockDataProvider(), "hs300", 5)
     assert result["backtest"].holding_years == 5
+
+
+def test_get_entry_backtest_returns_bucketed_result() -> None:
+    result = get_entry_backtest(MockDataProvider(), "hs300", 20)
+    assert result["entry_backtest"].index_code == "hs300"
+    assert len(result["entry_backtest"].entries) == 3
 
 
 def test_get_iopv_returns_payload() -> None:

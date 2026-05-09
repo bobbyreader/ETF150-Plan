@@ -5,7 +5,6 @@ from pathlib import Path
 
 from etf150.config import DEFAULT_BACKTEST_YEARS, DEFAULT_CATEGORY, DEFAULT_ETF_SYMBOL, DEFAULT_INDEX, DEFAULT_PROVIDER, DEFAULT_ROTATION_FROM, DEFAULT_ROTATION_FROM_PERCENTILE, DEFAULT_ROTATION_TO, DEFAULT_ROTATION_TO_PERCENTILE, DEFAULT_SIP_UNITS, DEFAULT_TOTAL_CAPITAL, SUPPORTED_INDEXES
 from etf150.models import AllocationSlice, ConstituentMetric, HistoricalSeriesPoint, IOPVSnapshot, IndexSnapshot, PanelEntry
-from etf150.reporting.charts import build_allocation_figure, save_allocation_chart
 
 
 class MockDataProvider:
@@ -72,7 +71,25 @@ class MockDataProvider:
         }
         return base.get(years, [100, 110])
 
+    def get_backtest_points(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        today = date(2026, 5, 8)
+        prices = [100, 100, 100, 110, 90, 150, 80, 170, 120, 190] * 4
+        return [
+            HistoricalSeriesPoint(day=today + timedelta(days=index), value=value)
+            for index, value in enumerate(prices)
+        ]
+
+    def get_valuation_history(self, index_code: str, years: int) -> list[HistoricalSeriesPoint]:
+        today = date(2026, 5, 8)
+        valuations = [10, 55, 90, 15, 85, 60, 50, 18, 82, 58] * 4
+        return [
+            HistoricalSeriesPoint(day=today + timedelta(days=index), value=value)
+            for index, value in enumerate(valuations)
+        ]
+
     def save_allocation_chart(self, output_path: Path) -> Path:
+        from etf150.reporting.charts import save_allocation_chart
+
         return save_allocation_chart(self.get_allocation_slices(), output_path)
 
     def get_sip_suggestion(self, units: int) -> str:
@@ -128,6 +145,8 @@ class MockDataProvider:
         return ["内置演示数据", "适合离线测试", "不代表真实市场行情"]
 
     def get_allocation_figure(self):
+        from etf150.reporting.charts import build_allocation_figure
+
         return build_allocation_figure(self.get_allocation_slices())
 
     def get_price_series(self, symbol: str, years: int) -> list[float]:

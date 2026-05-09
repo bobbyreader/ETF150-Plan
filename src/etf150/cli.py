@@ -7,7 +7,7 @@ from etf150.data.providers.akshare_provider import AkshareDataProvider
 from etf150.data.providers.base import DataProvider
 from etf150.data.providers.mock import MockDataProvider
 from etf150.reporting.console import render_json
-from etf150.services import get_allocation, get_backtest, get_iopv, get_panel, get_signal, get_sip, get_valuation
+from etf150.services import get_allocation, get_backtest, get_entry_backtest, get_iopv, get_panel, get_signal, get_sip, get_valuation
 
 
 def get_provider(name: str) -> DataProvider:
@@ -53,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--provider", default="mock")
     backtest_parser.add_argument("--index", required=True)
     backtest_parser.add_argument("--years", type=int, choices=[3, 5, 10], required=True)
+
+    entry_backtest_parser = subparsers.add_parser("entry-backtest")
+    entry_backtest_parser.add_argument("--provider", default="mock")
+    entry_backtest_parser.add_argument("--index", required=True)
+    entry_backtest_parser.add_argument("--holding-days", type=int, default=252)
+    entry_backtest_parser.add_argument("--history-years", type=int, choices=[3, 5, 10], default=10)
 
     iopv_parser = subparsers.add_parser("iopv")
     iopv_parser.add_argument("--provider", default="mock")
@@ -100,6 +106,11 @@ def handle_backtest(provider: DataProvider, index_code: str, years: int) -> dict
     return get_backtest(provider, index_code, years)
 
 
+def handle_entry_backtest(provider: DataProvider, index_code: str, holding_days: int, history_years: int = 10) -> dict[str, Any]:
+    """Handle valuation-entry backtest command."""
+    return get_entry_backtest(provider, index_code, holding_days, history_years)
+
+
 def handle_iopv(provider: DataProvider, symbol: str) -> dict[str, Any]:
     """Handle IOPV command."""
     return get_iopv(provider, symbol)
@@ -123,6 +134,8 @@ def main() -> None:
         result = handle_sip(provider, args.units)
     elif args.command == "backtest":
         result = handle_backtest(provider, args.index, args.years)
+    elif args.command == "entry-backtest":
+        result = handle_entry_backtest(provider, args.index, args.holding_days, args.history_years)
     elif args.command == "iopv":
         result = handle_iopv(provider, args.symbol)
     else:
