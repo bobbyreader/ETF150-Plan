@@ -279,12 +279,15 @@ class AkshareDataProvider(MockDataProvider):
         market_pe = require_float(latest_pe.get("滚动市盈率"), f"{index_meta['name']} 滚动市盈率缺失")
         pb = require_float(latest_pb.get("市净率"), f"{index_meta['name']} 市净率缺失")
         try:
-            cons_frame = self._ak.index_stock_cons_weight_csindex(symbol=index_meta["csindex_symbol"])
-        except Exception as error:
-            raise RuntimeError(f"AkShare 无法获取 {index_meta['name']} 成分股列表: {error}") from error
+            cons_frame = self._get_constituent_frame(index_code)
+        except RuntimeError:
+            return self._build_index_proxy_constituents(index_meta["name"], index_meta["category"], equal_weight_pe, market_pe, pb)
         if cons_frame.empty:
-            raise RuntimeError(f"AkShare 返回了空的 {index_meta['name']} 成分股列表")
-        pe_lookup = self._get_a_share_pe_lookup()
+            return self._build_index_proxy_constituents(index_meta["name"], index_meta["category"], equal_weight_pe, market_pe, pb)
+        try:
+            pe_lookup = self._get_a_share_pe_lookup()
+        except RuntimeError:
+            pe_lookup = {}
         constituents: list[ConstituentMetric] = []
         for row in cons_frame.to_dict("records"):
             code = normalize_stock_code(row.get("成分券代码"))
@@ -301,33 +304,58 @@ class AkshareDataProvider(MockDataProvider):
                 )
             )
         if not constituents:
-            constituents = [
-                ConstituentMetric(
-                    code="index_proxy_equal_weight",
-                    name=f"{index_meta['name']}等权PE代理",
-                    pe_ttm=equal_weight_pe,
-                    pb=pb,
-                    category=index_meta["category"],
-                ),
-                ConstituentMetric(
-                    code="index_proxy_market_weight",
-                    name=f"{index_meta['name']}市值加权PE代理",
-                    pe_ttm=market_pe,
-                    pb=pb,
-                    category=index_meta["category"],
-                ),
-            ]
+            return self._build_index_proxy_constituents(index_meta["name"], index_meta["category"], equal_weight_pe, market_pe, pb)
         return constituents
+
+    @lru_cache(maxsize=16)
+    def _get_constituent_frame(self, index_code: str) -> pd.DataFrame:
+        index_meta = self._get_index_meta(index_code)
+
+        def load() -> pd.DataFrame:
+            try:
+                return self._ak.index_stock_cons_weight_csindex(symbol=index_meta["csindex_symbol"])
+            except Exception as error:
+                raise RuntimeError(f"AkShare 无法获取 {index_meta['name']} 成分股列表: {error}") from error
+
+        frame = self._cached_frame(f"constituents-{index_code}", load)
+        if frame.empty:
+            raise RuntimeError(f"AkShare 返回了空的 {index_meta['name']} 成分股列表")
+        return frame.copy()
+
+    def _build_index_proxy_constituents(
+        self,
+        index_name: str,
+        category: str,
+        equal_weight_pe: float,
+        market_pe: float,
+        pb: float,
+    ) -> list[ConstituentMetric]:
+        return [
+            ConstituentMetric(
+                code="index_proxy_equal_weight",
+                name=f"{index_name}等权PE代理",
+                pe_ttm=equal_weight_pe,
+                pb=pb,
+                category=category,
+            ),
+            ConstituentMetric(
+                code="index_proxy_market_weight",
+                name=f"{index_name}市值加权PE代理",
+                pe_ttm=market_pe,
+                pb=pb,
+                category=category,
+            ),
+        ]
 
     @lru_cache(maxsize=1)
     def _get_a_share_pe_lookup(self) -> dict[str, float]:
         def load() -> pd.DataFrame:
             try:
-                return self._ak.stock_a_ttm_lyr()
+                return self._ak.stock_zh_a_spot_em()
             except Exception as error:
-                raise RuntimeError(f"AkShare 无法获取 A 股 TTM PE 数据: {error}") from error
+                raise RuntimeError(f"AkShare 无法获取 A 股个股 PE 数据: {error}") from error
 
-        frame = self._cached_frame("a-share-ttm-pe", load)
+        frame = self._cached_frame("a-share-stock-pe", load)
         code_column = find_column(frame, ("代码", "股票代码", "证券代码"))
         pe_column = find_pe_column(frame)
         lookup: dict[str, float] = {}
@@ -337,7 +365,7 @@ class AkshareDataProvider(MockDataProvider):
             if code and pe_ttm is not None:
                 lookup[code] = pe_ttm
         if not lookup:
-            raise RuntimeError("A 股 TTM PE 数据为空，无法构建成分股等权估值")
+            raise RuntimeError("A 股个股 PE 数据为空，无法构建成分股等权估值")
         return lookup
 
     def _build_history_points(self, frame: pd.DataFrame, years: int) -> list[HistoricalSeriesPoint]:

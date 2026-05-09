@@ -9,6 +9,8 @@ from etf150.data.providers.akshare_provider import AkshareDataProvider
 
 class DummyAk:
     fail_pe = False
+    fail_stock_spot = False
+    fail_constituents = False
 
     def stock_index_pe_lg(self, symbol: str) -> pd.DataFrame:
         if self.fail_pe:
@@ -45,6 +47,8 @@ class DummyAk:
         return pd.DataFrame([{"收盘": 1.0}, {"收盘": 1.1}, {"收盘": 1.2}])
 
     def index_stock_cons_weight_csindex(self, symbol: str) -> pd.DataFrame:
+        if self.fail_constituents:
+            raise ValueError("constituent outage")
         return pd.DataFrame(
             [
                 {"成分券代码": "000001", "成分券名称": "平安银行"},
@@ -52,12 +56,14 @@ class DummyAk:
             ]
         )
 
-    def stock_a_ttm_lyr(self) -> pd.DataFrame:
+    def stock_zh_a_spot_em(self) -> pd.DataFrame:
+        if self.fail_stock_spot:
+            raise ValueError("spot outage")
         return pd.DataFrame(
             [
-                {"代码": "000001", "市盈率-ttm": 8.0},
-                {"代码": "000002", "市盈率-ttm": 12.0},
-                {"代码": "000003", "市盈率-ttm": 220.0},
+                {"代码": "000001", "市盈率-动态": 8.0},
+                {"代码": "000002", "市盈率-动态": 12.0},
+                {"代码": "000003", "市盈率-动态": 220.0},
             ]
         )
 
@@ -80,6 +86,8 @@ def provider(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AkshareDataProvider:
     instance._get_index_pb_frame.cache_clear()
     instance._get_index_daily_frame.cache_clear()
     instance._get_etf_spot_frame.cache_clear()
+    instance._get_a_share_pe_lookup.cache_clear()
+    instance._get_constituent_frame.cache_clear()
     return instance
 
 
@@ -113,6 +121,24 @@ def test_get_index_snapshot_builds_payload(provider: AkshareDataProvider) -> Non
     assert len(snapshot.constituents) == 2
     assert [item.pe_ttm for item in snapshot.constituents] == [8.0, 12.0]
     assert len(snapshot.history_5y) == 2
+
+
+def test_get_index_snapshot_falls_back_to_index_proxy_when_stock_pe_unavailable(provider: AkshareDataProvider) -> None:
+    provider._ak.fail_stock_spot = True
+    provider._get_a_share_pe_lookup.cache_clear()
+
+    snapshot = provider.get_index_snapshot("hs300")
+
+    assert [item.code for item in snapshot.constituents] == ["index_proxy_equal_weight", "index_proxy_market_weight"]
+
+
+def test_get_index_snapshot_falls_back_to_index_proxy_when_constituents_unavailable(provider: AkshareDataProvider) -> None:
+    provider._ak.fail_constituents = True
+    provider._get_constituent_frame.cache_clear()
+
+    snapshot = provider.get_index_snapshot("hs300")
+
+    assert [item.code for item in snapshot.constituents] == ["index_proxy_equal_weight", "index_proxy_market_weight"]
 
 
 def test_latest_percentile_uses_equal_weight_pe(provider: AkshareDataProvider) -> None:

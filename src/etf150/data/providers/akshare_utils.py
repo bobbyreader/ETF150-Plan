@@ -53,12 +53,20 @@ def optional_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | N
 
 
 def find_pe_column(frame: pd.DataFrame) -> str:
-    """Find the TTM PE column in AkShare's all-A-share valuation frame."""
+    """Find a constituent PE column in AkShare frames."""
+    preferred_columns = ("市盈率-动态", "市盈率(TTM)", "市盈率TTM", "市盈率-ttm", "PE(TTM)", "PETTM")
+    for column in preferred_columns:
+        if column in frame.columns:
+            return column
     for column in frame.columns:
         normalized = str(column).lower()
         if "ttm" in normalized and ("市盈率" in str(column) or "pe" in normalized):
             return str(column)
-    raise RuntimeError("A 股 TTM PE 数据缺少市盈率列")
+    for column in frame.columns:
+        normalized = str(column).lower()
+        if "市盈率" in str(column) or normalized == "pe":
+            return str(column)
+    raise RuntimeError("A 股个股 PE 数据缺少市盈率列")
 
 
 def normalize_stock_code(value: Any) -> str:
