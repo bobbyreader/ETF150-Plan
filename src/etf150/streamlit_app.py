@@ -41,6 +41,8 @@ def _render_valuation_tab(provider_name: str, index_code: str) -> None:
     percentiles[0].metric("5年分位", f"{valuation.percentile_5y}%")
     percentiles[1].metric("10年分位", f"{valuation.percentile_10y}%")
     percentiles[2].metric("估值区", valuation.valuation_zone)
+    if not valuation.is_actionable:
+        st.warning(valuation.data_quality_note)
 
     st.json(_serialize(result))
 
@@ -78,6 +80,8 @@ def _render_signal_tab(
     st.write(signal.position.rationale)
     st.write(signal.units.rationale)
     st.write(signal.worst_case_message)
+    if not signal.valuation.is_actionable:
+        st.warning(signal.valuation.data_quality_note)
     if signal.iopv_warning:
         st.warning(signal.iopv_warning)
     if signal.rotation:

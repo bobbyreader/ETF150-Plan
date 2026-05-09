@@ -27,7 +27,9 @@ def test_get_signal_returns_signal_report() -> None:
         rotation_to="创业板",
         rotation_to_percentile=25,
     )
-    assert result["signal"].signal == "wait"
+    assert result["signal"].signal == "data_insufficient"
+    assert result["signal"].units.suggested_units == 0
+    assert "数据质量不足" in result["signal"].worst_case_message
 
 
 def test_get_panel_returns_entries() -> None:

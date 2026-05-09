@@ -47,6 +47,9 @@ class ValuationResult:
     valuation_zone: str
     market_pb_zone: str
     is_risk_zone: bool
+    is_actionable: bool = True
+    uses_proxy_samples: bool = False
+    data_quality_note: str = ""
 
 
 @dataclass(slots=True)

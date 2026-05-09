@@ -51,3 +51,28 @@ def test_build_valuation_uses_filtered_equal_weight_pe() -> None:
     assert valuation.equal_weight_pe_median == 15
     assert valuation.valid_sample_size == 2
     assert valuation.market_pb_zone == "undervalued"
+    assert valuation.is_actionable is False
+    assert "有效估值样本不足" in valuation.data_quality_note
+
+
+def test_build_valuation_marks_proxy_samples_not_actionable() -> None:
+    history = [HistoricalSeriesPoint(day=date(2026, 1, day), value=value) for day, value in enumerate([10, 12, 14, 16, 18], start=1)]
+    snapshot = IndexSnapshot(
+        code="hs300",
+        name="HS300",
+        category="broad",
+        market_pe=14,
+        market_pb=1.5,
+        constituents=[
+            ConstituentMetric(code="index_proxy_equal_weight", name="代理等权PE", pe_ttm=10, pb=1.0),
+            ConstituentMetric(code="index_proxy_market_weight", name="代理市值PE", pe_ttm=14, pb=1.0),
+        ],
+        history_5y=history,
+        history_10y=history,
+    )
+
+    valuation = build_valuation(snapshot)
+
+    assert valuation.uses_proxy_samples is True
+    assert valuation.is_actionable is False
+    assert "代理样本" in valuation.data_quality_note

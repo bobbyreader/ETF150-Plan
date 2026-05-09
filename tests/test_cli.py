@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 
 from etf150.cli import (
@@ -22,8 +24,18 @@ def test_parser_accepts_valuation_command() -> None:
 
 
 def test_cli_import_does_not_load_matplotlib() -> None:
-    assert "matplotlib" not in sys.modules
-    assert "matplotlib.pyplot" not in sys.modules
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import etf150.cli; print('matplotlib' in sys.modules); print('matplotlib.pyplot' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+    )
+    assert result.stdout.strip().splitlines() == ["False", "False"]
 
 
 def test_handle_valuation_returns_payload() -> None:
@@ -31,11 +43,11 @@ def test_handle_valuation_returns_payload() -> None:
     assert result["valuation"].index_code == "hs300"
 
 
-def test_handle_signal_returns_wait_for_iopv_premium() -> None:
+def test_handle_signal_returns_data_insufficient_for_low_quality_valuation() -> None:
     parser = build_parser()
     args = parser.parse_args(["signal", "--provider", "mock", "--index", "510300", "--category", "broad"])
     result = handle_signal(MockDataProvider(), args)
-    assert result["signal"].signal == "wait"
+    assert result["signal"].signal == "data_insufficient"
 
 
 def test_handle_panel_returns_entries() -> None:
